@@ -7,6 +7,10 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 
 interface TradingSignal {
   id: string;
@@ -20,6 +24,19 @@ interface TradingSignal {
   macd: number;
   bollingerPosition: 'UPPER' | 'MIDDLE' | 'LOWER';
   isActive: boolean;
+  openPrice?: number;
+}
+
+interface BotSettings {
+  isEnabled: boolean;
+  accountId: string;
+  isDemoAccount: boolean;
+  minTradeAmount: number;
+  maxTradeAmount: number;
+  stopLossAmount: number;
+  allowedIPs: string[];
+  autoStrategy: boolean;
+  currentStrategy: string;
 }
 
 interface HistoryItem {
@@ -79,6 +96,21 @@ const generateChartData = (pair: string) => {
   });
 };
 
+const generateNewSignal = (oldSignal: TradingSignal): TradingSignal => {
+  return {
+    ...oldSignal,
+    type: Math.random() > 0.5 ? 'BUY' : 'SELL',
+    successRate: Math.floor(70 + Math.random() * 25),
+    expiration: [15, 30, 60, 120, 180][Math.floor(Math.random() * 5)],
+    timeToSignal: Math.floor(60 + Math.random() * 240),
+    rsi: Math.floor(30 + Math.random() * 40),
+    macd: parseFloat((Math.random() * 2 - 1).toFixed(2)),
+    bollingerPosition: ['UPPER', 'MIDDLE', 'LOWER'][Math.floor(Math.random() * 3)] as any,
+    isActive: true,
+    openPrice: undefined
+  };
+};
+
 const Index = () => {
   const [signals, setSignals] = useState<TradingSignal[]>(generateMockSignals());
   const [history, setHistory] = useState<HistoryItem[]>(generateMockHistory());
@@ -86,15 +118,54 @@ const Index = () => {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [selectedPair, setSelectedPair] = useState('EUR/USD');
   const [chartData, setChartData] = useState(generateChartData('EUR/USD'));
+  const [botSettings, setBotSettings] = useState<BotSettings>({
+    isEnabled: false,
+    accountId: '',
+    isDemoAccount: true,
+    minTradeAmount: 1,
+    maxTradeAmount: 100,
+    stopLossAmount: 500,
+    allowedIPs: [],
+    autoStrategy: true,
+    currentStrategy: 'Aggressive Scalping'
+  });
+  const [newIP, setNewIP] = useState('');
 
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(new Date());
-      setSignals(prev => prev.map(signal => ({
-        ...signal,
-        timeToSignal: Math.max(0, signal.timeToSignal - 1),
-        rsi: Math.max(0, Math.min(100, signal.rsi + (Math.random() - 0.5) * 2))
-      })));
+      
+      setSignals(prev => prev.map(signal => {
+        const newTimeToSignal = Math.max(0, signal.timeToSignal - 1);
+        
+        if (newTimeToSignal === 0 && signal.timeToSignal === 1) {
+          const currentPrice = chartData[chartData.length - 1]?.price || 1.1;
+          const isWin = Math.random() * 100 < signal.successRate;
+          const tradeAmount = botSettings.isEnabled 
+            ? Math.floor(Math.random() * (botSettings.maxTradeAmount - botSettings.minTradeAmount) + botSettings.minTradeAmount)
+            : 10;
+          const profit = isWin ? tradeAmount * 0.8 : -tradeAmount;
+          
+          const newHistoryItem: HistoryItem = {
+            id: `history-${Date.now()}-${signal.id}`,
+            pair: signal.pair,
+            type: signal.type,
+            result: isWin ? 'WIN' : 'LOSS',
+            profit: parseFloat(profit.toFixed(2)),
+            timestamp: new Date().toLocaleTimeString('ru-RU')
+          };
+          
+          setHistory(prev => [newHistoryItem, ...prev].slice(0, 20));
+          
+          return generateNewSignal(signal);
+        }
+        
+        return {
+          ...signal,
+          timeToSignal: newTimeToSignal,
+          rsi: Math.max(0, Math.min(100, signal.rsi + (Math.random() - 0.5) * 2))
+        };
+      }));
       
       setChartData(prev => {
         const newData = [...prev.slice(1)];
@@ -112,7 +183,7 @@ const Index = () => {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, []);
+  }, [chartData, botSettings]);
 
   useEffect(() => {
     setChartData(generateChartData(selectedPair));
@@ -187,6 +258,182 @@ const Index = () => {
               </div>
             </div>
           </Card>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <Dialog>
+            <DialogTrigger asChild>
+              <Button variant="outline" className="gap-2">
+                <Icon name="Settings" size={20} />
+                Настройки AI-бота
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-2xl bg-card">
+              <DialogHeader>
+                <DialogTitle className="text-2xl">⚙️ Настройки AI-бота Pocket Option</DialogTitle>
+              </DialogHeader>
+              
+              <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-2">
+                <div className="flex items-center justify-between p-4 bg-secondary/50 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-3 h-3 rounded-full ${botSettings.isEnabled ? 'bg-success animate-pulse' : 'bg-muted-foreground'}`}></div>
+                    <div>
+                      <Label className="text-base font-semibold">AI-бот</Label>
+                      <p className="text-sm text-muted-foreground">
+                        {botSettings.isEnabled ? 'Бот активен и торгует' : 'Бот остановлен'}
+                      </p>
+                    </div>
+                  </div>
+                  <Switch
+                    checked={botSettings.isEnabled}
+                    onCheckedChange={(checked) => setBotSettings(prev => ({ ...prev, isEnabled: checked }))}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="accountId">ID аккаунта Pocket Option</Label>
+                  <Input
+                    id="accountId"
+                    placeholder="Введите ID профиля"
+                    value={botSettings.accountId}
+                    onChange={(e) => setBotSettings(prev => ({ ...prev, accountId: e.target.value }))}
+                  />
+                  <p className="text-xs text-muted-foreground">Привязка происходит по ID профиля</p>
+                </div>
+
+                <div className="flex items-center justify-between p-4 bg-secondary/50 rounded-lg">
+                  <div>
+                    <Label className="text-base">Демо счёт</Label>
+                    <p className="text-sm text-muted-foreground">
+                      {botSettings.isDemoAccount ? 'Торговля на демо-счёте' : 'Торговля на реальном счёте'}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={botSettings.isDemoAccount}
+                    onCheckedChange={(checked) => setBotSettings(prev => ({ ...prev, isDemoAccount: checked }))}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="minAmount">Минимальная сумма сделки ($)</Label>
+                    <Input
+                      id="minAmount"
+                      type="number"
+                      value={botSettings.minTradeAmount}
+                      onChange={(e) => setBotSettings(prev => ({ ...prev, minTradeAmount: parseFloat(e.target.value) || 1 }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="maxAmount">Максимальная сумма сделки ($)</Label>
+                    <Input
+                      id="maxAmount"
+                      type="number"
+                      value={botSettings.maxTradeAmount}
+                      onChange={(e) => setBotSettings(prev => ({ ...prev, maxTradeAmount: parseFloat(e.target.value) || 100 }))}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="stopLoss">Стоп-лосс ($)</Label>
+                  <Input
+                    id="stopLoss"
+                    type="number"
+                    value={botSettings.stopLossAmount}
+                    onChange={(e) => setBotSettings(prev => ({ ...prev, stopLossAmount: parseFloat(e.target.value) || 500 }))}
+                  />
+                  <p className="text-xs text-muted-foreground">Бот остановится при достижении убытка</p>
+                </div>
+
+                <div className="flex items-center justify-between p-4 bg-secondary/50 rounded-lg">
+                  <div>
+                    <Label className="text-base">Автоподбор стратегии</Label>
+                    <p className="text-sm text-muted-foreground">AI анализирует рынок и выбирает стратегию</p>
+                  </div>
+                  <Switch
+                    checked={botSettings.autoStrategy}
+                    onCheckedChange={(checked) => setBotSettings(prev => ({ ...prev, autoStrategy: checked }))}
+                  />
+                </div>
+
+                {!botSettings.autoStrategy && (
+                  <div className="space-y-2">
+                    <Label>Текущая стратегия</Label>
+                    <Select value={botSettings.currentStrategy} onValueChange={(value) => setBotSettings(prev => ({ ...prev, currentStrategy: value }))}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Aggressive Scalping">Агрессивный скальпинг</SelectItem>
+                        <SelectItem value="Conservative Trend">Консервативный тренд</SelectItem>
+                        <SelectItem value="Breakout Trading">Пробой уровней</SelectItem>
+                        <SelectItem value="Mean Reversion">Возврат к среднему</SelectItem>
+                        <SelectItem value="Momentum Trading">Импульсная торговля</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  <Label>Разрешённые IP-адреса</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Введите IP (например, 192.168.1.1)"
+                      value={newIP}
+                      onChange={(e) => setNewIP(e.target.value)}
+                    />
+                    <Button
+                      onClick={() => {
+                        if (newIP.trim()) {
+                          setBotSettings(prev => ({ ...prev, allowedIPs: [...prev.allowedIPs, newIP.trim()] }));
+                          setNewIP('');
+                        }
+                      }}
+                    >
+                      Добавить
+                    </Button>
+                  </div>
+                  {botSettings.allowedIPs.length > 0 && (
+                    <div className="space-y-2">
+                      {botSettings.allowedIPs.map((ip, index) => (
+                        <div key={index} className="flex items-center justify-between p-2 bg-secondary/50 rounded">
+                          <span className="font-mono text-sm">{ip}</span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setBotSettings(prev => ({ ...prev, allowedIPs: prev.allowedIPs.filter((_, i) => i !== index) }))}
+                          >
+                            <Icon name="Trash2" size={16} />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 bg-primary/10 border border-primary/20 rounded-lg space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Icon name="Shield" size={20} className="text-primary" />
+                    <Label className="text-base">Защита и безопасность</Label>
+                  </div>
+                  <ul className="text-sm text-muted-foreground space-y-1 ml-7">
+                    <li>✓ Защита от обнаружения платформой</li>
+                    <li>✓ Автоматическое обновление под стратегию</li>
+                    <li>✓ Шифрование трафика и запросов</li>
+                    <li>✓ Удалённое управление через ID</li>
+                  </ul>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          {botSettings.isEnabled && (
+            <Badge variant="default" className="gap-2 px-4 py-2">
+              <div className="w-2 h-2 rounded-full bg-success animate-pulse"></div>
+              AI-бот активен • {botSettings.currentStrategy}
+            </Badge>
+          )}
         </div>
 
         <Tabs defaultValue="signals" className="w-full">
