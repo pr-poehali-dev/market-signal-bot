@@ -23,6 +23,11 @@ export interface BotSettings {
   allowedIPs: string[];
   autoStrategy: boolean;
   currentStrategy: string;
+  minConfidence: number;
+  maxConcurrentTrades: number;
+  martingaleEnabled: boolean;
+  antiDetectEnabled: boolean;
+  useSmartRisk: boolean;
 }
 
 export interface HistoryItem {

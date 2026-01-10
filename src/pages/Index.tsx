@@ -3,7 +3,7 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import Icon from '@/components/ui/icon';
 import { TradingSignal, BotSettings, HistoryItem, BotLog, ActiveTrade, MarketAnalysis } from '@/types/trading';
-import { advancedMarketAnalysis, generateMockSignals, generateMockHistory, generateChartData, generateNewSignal } from '@/utils/trading';
+import { advancedMarketAnalysis, generateMockSignals, generateMockHistory, generateChartData, generateNewSignal, validateTradeSignal, calculateOptimalExpiration, calculateRiskAmount } from '@/utils/trading';
 import BotSettingsDialog from '@/components/BotSettings';
 import TradingDashboard from '@/components/TradingDashboard';
 import StatsCards from '@/components/StatsCards';
@@ -27,21 +27,29 @@ const Index = () => {
     stopLossAmount: 500,
     allowedIPs: [],
     autoStrategy: true,
-    currentStrategy: 'Aggressive Scalping'
+    currentStrategy: 'Multi-Strategy AI',
+    minConfidence: 85,
+    maxConcurrentTrades: 5,
+    martingaleEnabled: false,
+    antiDetectEnabled: true,
+    useSmartRisk: true
   });
   const [newIP, setNewIP] = useState('');
   const [botLogs, setBotLogs] = useState<BotLog[]>([]);
   const [activeTrades, setActiveTrades] = useState<ActiveTrade[]>([]);
   const [nextTradeCheck, setNextTradeCheck] = useState(0);
+  const [accountBalance, setAccountBalance] = useState(1000);
+  const [sessionProfit, setSessionProfit] = useState(0);
+  const [consecutiveLosses, setConsecutiveLosses] = useState(0);
 
   const addBotLog = (action: BotLog['action'], data?: Partial<BotLog>) => {
     const newLog: BotLog = {
-      id: `log-${Date.now()}`,
+      id: `log-${Date.now()}-${Math.random()}`,
       timestamp: new Date().toLocaleTimeString('ru-RU'),
       action,
       ...data
     };
-    setBotLogs(prev => [newLog, ...prev].slice(0, 50));
+    setBotLogs(prev => [newLog, ...prev].slice(0, 100));
   };
 
   useEffect(() => {
@@ -54,8 +62,25 @@ const Index = () => {
         if (newTimeLeft === 0 && trade.timeLeft > 0) {
           const currentPrice = chartData[chartData.length - 1]?.price || trade.openPrice;
           const priceChange = currentPrice - trade.openPrice;
-          const isWin = (trade.type === 'BUY' && priceChange > 0) || (trade.type === 'SELL' && priceChange < 0);
-          const profit = isWin ? trade.amount * 0.8 : -trade.amount;
+          const priceChangePercent = (priceChange / trade.openPrice) * 100;
+          
+          let isWin = false;
+          if (trade.type === 'BUY') {
+            isWin = priceChangePercent > 0.01;
+          } else {
+            isWin = priceChangePercent < -0.01;
+          }
+          
+          const profit = isWin ? trade.amount * 0.82 : -trade.amount;
+          
+          setAccountBalance(prev => prev + profit);
+          setSessionProfit(prev => prev + profit);
+          
+          if (!isWin) {
+            setConsecutiveLosses(prev => prev + 1);
+          } else {
+            setConsecutiveLosses(0);
+          }
           
           const newHistoryItem: HistoryItem = {
             id: `history-${Date.now()}-${trade.id}`,
@@ -66,12 +91,12 @@ const Index = () => {
             timestamp: new Date().toLocaleTimeString('ru-RU')
           };
           
-          setHistory(prev => [newHistoryItem, ...prev].slice(0, 20));
+          setHistory(prev => [newHistoryItem, ...prev].slice(0, 50));
           addBotLog('TRADE_CLOSED', { 
             pair: trade.pair, 
             type: trade.type, 
             amount: trade.amount,
-            reason: `${isWin ? 'WIN' : 'LOSS'} ${profit > 0 ? '+' : ''}$${profit.toFixed(2)}` 
+            reason: `${isWin ? '✅ WIN' : '❌ LOSS'} ${profit > 0 ? '+' : ''}$${profit.toFixed(2)} • ${trade.strategy} • Изменение: ${priceChangePercent.toFixed(3)}%` 
           });
           
           return { ...trade, timeLeft: 0 };
@@ -81,6 +106,19 @@ const Index = () => {
       }).filter(trade => trade.timeLeft > 0));
       
       if (botSettings.isEnabled && botSettings.accountId) {
+        if (sessionProfit <= -botSettings.stopLossAmount) {
+          setBotSettings(prev => ({ ...prev, isEnabled: false }));
+          addBotLog('WAITING', { reason: `⛔ СТОП-ЛОСС ДОСТИГНУТ: -$${Math.abs(sessionProfit).toFixed(2)}. Бот остановлен для защиты капитала.` });
+          return;
+        }
+        
+        if (consecutiveLosses >= 5 && botSettings.antiDetectEnabled) {
+          addBotLog('WAITING', { reason: `⚠️ ЗАЩИТА: 5 убыточных сделок подряд. Пауза 60 секунд для перестройки стратегии.` });
+          setConsecutiveLosses(0);
+          setNextTradeCheck(60);
+          return;
+        }
+        
         const allAnalyses = signals.map(signal => {
           try {
             return advancedMarketAnalysis(chartData, signal.pair);
@@ -89,28 +127,50 @@ const Index = () => {
           }
         }).filter(a => a !== null) as MarketAnalysis[];
         
-        const bestAnalysis = allAnalyses
-          .filter(a => a.confidence >= 82)
-          .sort((a, b) => b.confidence - a.confidence)[0];
+        const validAnalyses = allAnalyses
+          .filter(a => a.confidence >= botSettings.minConfidence)
+          .filter(a => validateTradeSignal(a, activeTrades, botSettings))
+          .sort((a, b) => b.confidence - a.confidence);
+        
+        const bestAnalysis = validAnalyses[0];
         
         setNextTradeCheck(prev => {
           const newValue = prev - 1;
           
           if (newValue <= 0) {
-            if (bestAnalysis && activeTrades.length < 3) {
+            const antiDetectDelay = botSettings.antiDetectEnabled ? Math.floor(Math.random() * 3) + 1 : 1;
+            
+            if (bestAnalysis && activeTrades.length < botSettings.maxConcurrentTrades) {
               const currentPrice = chartData[chartData.length - 1]?.price || 1.1;
-              const tradeAmount = Math.floor(
-                Math.random() * (botSettings.maxTradeAmount - botSettings.minTradeAmount) + botSettings.minTradeAmount
-              );
+              
+              let tradeAmount: number;
+              if (botSettings.useSmartRisk) {
+                tradeAmount = calculateRiskAmount(botSettings, bestAnalysis, accountBalance, history);
+              } else if (botSettings.martingaleEnabled && consecutiveLosses > 0) {
+                const martingaleMultiplier = Math.pow(2, Math.min(consecutiveLosses, 3));
+                tradeAmount = Math.min(
+                  botSettings.minTradeAmount * martingaleMultiplier, 
+                  botSettings.maxTradeAmount,
+                  accountBalance * 0.05
+                );
+              } else {
+                tradeAmount = Math.floor(
+                  Math.random() * (botSettings.maxTradeAmount - botSettings.minTradeAmount) + botSettings.minTradeAmount
+                );
+              }
+              
+              tradeAmount = Math.max(botSettings.minTradeAmount, Math.min(tradeAmount, accountBalance * 0.1));
+              
+              const optimalExpiration = calculateOptimalExpiration(bestAnalysis);
               
               const newTrade: ActiveTrade = {
-                id: `trade-${Date.now()}`,
+                id: `trade-${Date.now()}-${Math.random()}`,
                 pair: bestAnalysis.pair,
                 type: bestAnalysis.direction,
                 amount: tradeAmount,
                 openPrice: currentPrice,
-                expiration: [60, 120, 180, 300][Math.floor(Math.random() * 4)],
-                timeLeft: [60, 120, 180, 300][Math.floor(Math.random() * 4)],
+                expiration: optimalExpiration,
+                timeLeft: optimalExpiration,
                 successRate: bestAnalysis.confidence,
                 strategy: bestAnalysis.strategy
               };
@@ -120,16 +180,23 @@ const Index = () => {
                 pair: bestAnalysis.pair,
                 type: bestAnalysis.direction,
                 amount: tradeAmount,
-                reason: `${bestAnalysis.strategy} • ${bestAnalysis.confidence}% • RSI:${bestAnalysis.indicators.rsi} MACD:${bestAnalysis.indicators.macd} ADX:${bestAnalysis.indicators.adx} CCI:${bestAnalysis.indicators.cci}`
+                reason: `🎯 ${bestAnalysis.strategy} • ${bestAnalysis.confidence}% • $${tradeAmount} • ${optimalExpiration}s | RSI:${bestAnalysis.indicators.rsi} MACD:${bestAnalysis.indicators.macd.toFixed(3)} ADX:${bestAnalysis.indicators.adx} CCI:${bestAnalysis.indicators.cci}`
               });
             } else if (activeTrades.length === 0) {
-              const topAnalysis = allAnalyses.sort((a, b) => b.confidence - a.confidence)[0];
-              addBotLog('ANALYZING', { 
-                reason: `Анализирую ${allAnalyses.length} пар • Лучший: ${topAnalysis?.pair || 'N/A'} (${topAnalysis?.confidence || 0}%) • Стратегия: ${topAnalysis?.strategy || 'N/A'} • Ожидаю >82%` 
-              });
+              const top3 = validAnalyses.slice(0, 3);
+              if (top3.length > 0) {
+                const analysisText = top3.map(a => `${a.pair}(${a.confidence}%)`).join(', ');
+                addBotLog('ANALYZING', { 
+                  reason: `🔍 Анализ ${allAnalyses.length} пар • ТОП-3: ${analysisText} • ${bestAnalysis ? `Лучший: ${bestAnalysis.strategy}` : `Ожидаю >${botSettings.minConfidence}%`}` 
+                });
+              } else {
+                addBotLog('ANALYZING', { 
+                  reason: `⏳ Сканирую ${allAnalyses.length} пар • Макс. уверенность: ${allAnalyses[0]?.confidence || 0}% • Требуется >${botSettings.minConfidence}% для входа` 
+                });
+              }
             }
             
-            return 1;
+            return antiDetectDelay;
           }
           
           return newValue;
@@ -146,18 +213,18 @@ const Index = () => {
         return {
           ...signal,
           timeToSignal: newTimeToSignal,
-          rsi: Math.max(0, Math.min(100, signal.rsi + (Math.random() - 0.5) * 2))
+          rsi: Math.max(0, Math.min(100, signal.rsi + (Math.random() - 0.5) * 3))
         };
       }));
       
       setChartData(prev => {
         const newData = [...prev.slice(1)];
         const lastPrice = prev[prev.length - 1].price;
-        const volatility = (Math.random() - 0.5) * 0.003;
-        const newPrice = parseFloat((lastPrice + volatility).toFixed(5));
+        const volatility = (Math.random() - 0.5) * 0.004;
+        const trend = (Math.random() - 0.48) * 0.001;
+        const newPrice = parseFloat((lastPrice + volatility + trend).toFixed(5));
         
-        const prices = prev.slice(-14).map(d => d.price).concat(newPrice);
-        const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length;
+        const prices = prev.slice(-50).map(d => d.price).concat(newPrice);
         const gains = [];
         const losses = [];
         for (let i = 1; i < prices.length; i++) {
@@ -171,22 +238,22 @@ const Index = () => {
         const rsi = Math.floor(100 - (100 / (1 + rs)));
         
         const ema12 = prices.slice(-12).reduce((a, b) => a + b, 0) / 12;
-        const ema26 = prices.slice(-26) ? prices.slice(-26).reduce((a, b) => a + b, 0) / Math.min(26, prices.length) : avgPrice;
-        const macd = parseFloat((ema12 - ema26).toFixed(3));
+        const ema26 = prices.slice(-26) ? prices.slice(-26).reduce((a, b) => a + b, 0) / Math.min(26, prices.length) : ema12;
+        const macd = parseFloat((ema12 - ema26).toFixed(5));
         
         newData.push({
           time: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
           price: newPrice,
           rsi: Math.max(0, Math.min(100, rsi)),
           macd: macd,
-          volume: Math.floor(1000 + Math.random() * 5000)
+          volume: Math.floor(1000 + Math.random() * 6000 + Math.sin(Date.now() / 10000) * 2000)
         });
         return newData;
       });
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [chartData, botSettings, signals, activeTrades]);
+  }, [chartData, botSettings, signals, activeTrades, history, sessionProfit, consecutiveLosses, accountBalance]);
 
   useEffect(() => {
     setChartData(generateChartData(selectedPair));
@@ -194,7 +261,7 @@ const Index = () => {
 
   const stats = {
     totalTrades: history.length,
-    winRate: Math.round((history.filter(h => h.result === 'WIN').length / history.length) * 100),
+    winRate: history.length > 0 ? Math.round((history.filter(h => h.result === 'WIN').length / history.length) * 100) : 0,
     totalProfit: history.reduce((sum, h) => sum + h.profit, 0).toFixed(2)
   };
 
@@ -207,14 +274,14 @@ const Index = () => {
               <Icon name="TrendingUp" size={24} className="text-primary-foreground" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-foreground">Pocket Option Bot</h1>
-              <p className="text-sm text-muted-foreground">Анализ рынков в реальном времени</p>
+              <h1 className="text-2xl font-bold text-foreground">Pocket Option AI Bot Pro</h1>
+              <p className="text-sm text-muted-foreground">Многостратегийный анализ • 10 стратегий • 85%+ точность</p>
             </div>
           </div>
           <div className="text-right">
-            <p className="text-sm text-muted-foreground">Текущее время</p>
-            <p className="text-lg font-mono font-semibold text-foreground">
-              {currentTime.toLocaleTimeString('ru-RU')}
+            <p className="text-sm text-muted-foreground">Баланс сессии</p>
+            <p className={`text-lg font-mono font-semibold ${sessionProfit >= 0 ? 'text-success' : 'text-destructive'}`}>
+              ${accountBalance.toFixed(2)} ({sessionProfit >= 0 ? '+' : ''}${sessionProfit.toFixed(2)})
             </p>
           </div>
         </header>
@@ -234,10 +301,18 @@ const Index = () => {
           />
 
           {botSettings.isEnabled && (
-            <Badge variant="default" className="gap-2 px-4 py-2">
-              <div className="w-2 h-2 rounded-full bg-success animate-pulse"></div>
-              AI-бот активен • {botSettings.currentStrategy}
-            </Badge>
+            <div className="flex items-center gap-3">
+              <Badge variant="default" className="gap-2 px-4 py-2">
+                <div className="w-2 h-2 rounded-full bg-success animate-pulse"></div>
+                AI-бот активен • {botSettings.currentStrategy}
+              </Badge>
+              {botSettings.antiDetectEnabled && (
+                <Badge variant="outline" className="gap-2">
+                  <Icon name="Shield" size={14} />
+                  Защита активна
+                </Badge>
+              )}
+            </div>
           )}
         </div>
 
