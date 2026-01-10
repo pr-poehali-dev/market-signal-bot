@@ -48,6 +48,27 @@ interface HistoryItem {
   timestamp: string;
 }
 
+interface BotLog {
+  id: string;
+  timestamp: string;
+  action: 'ANALYZING' | 'TRADE_OPENED' | 'TRADE_CLOSED' | 'WAITING';
+  pair?: string;
+  type?: 'BUY' | 'SELL';
+  amount?: number;
+  reason?: string;
+}
+
+interface ActiveTrade {
+  id: string;
+  pair: string;
+  type: 'BUY' | 'SELL';
+  amount: number;
+  openPrice: number;
+  expiration: number;
+  timeLeft: number;
+  successRate: number;
+}
+
 const analyzeMarket = (chartData: any[], pair: string) => {
   const recent = chartData.slice(-20);
   const prices = recent.map(d => d.price);
@@ -157,33 +178,104 @@ const Index = () => {
     currentStrategy: 'Aggressive Scalping'
   });
   const [newIP, setNewIP] = useState('');
+  const [botLogs, setBotLogs] = useState<BotLog[]>([]);
+  const [activeTrades, setActiveTrades] = useState<ActiveTrade[]>([]);
+  const [nextTradeCheck, setNextTradeCheck] = useState(0);
+
+  const addBotLog = (action: BotLog['action'], data?: Partial<BotLog>) => {
+    const newLog: BotLog = {
+      id: `log-${Date.now()}`,
+      timestamp: new Date().toLocaleTimeString('ru-RU'),
+      action,
+      ...data
+    };
+    setBotLogs(prev => [newLog, ...prev].slice(0, 50));
+  };
 
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(new Date());
       
-      setSignals(prev => prev.map(signal => {
-        const newTimeToSignal = Math.max(0, signal.timeToSignal - 1);
+      setActiveTrades(prev => prev.map(trade => {
+        const newTimeLeft = Math.max(0, trade.timeLeft - 1);
         
-        if (newTimeToSignal === 0 && signal.timeToSignal === 1) {
-          const currentPrice = chartData[chartData.length - 1]?.price || 1.1;
-          const isWin = Math.random() * 100 < signal.successRate;
-          const tradeAmount = botSettings.isEnabled 
-            ? Math.floor(Math.random() * (botSettings.maxTradeAmount - botSettings.minTradeAmount) + botSettings.minTradeAmount)
-            : 10;
-          const profit = isWin ? tradeAmount * 0.8 : -tradeAmount;
+        if (newTimeLeft === 0 && trade.timeLeft > 0) {
+          const currentPrice = chartData[chartData.length - 1]?.price || trade.openPrice;
+          const priceChange = currentPrice - trade.openPrice;
+          const isWin = (trade.type === 'BUY' && priceChange > 0) || (trade.type === 'SELL' && priceChange < 0);
+          const profit = isWin ? trade.amount * 0.8 : -trade.amount;
           
           const newHistoryItem: HistoryItem = {
-            id: `history-${Date.now()}-${signal.id}`,
-            pair: signal.pair,
-            type: signal.type,
+            id: `history-${Date.now()}-${trade.id}`,
+            pair: trade.pair,
+            type: trade.type,
             result: isWin ? 'WIN' : 'LOSS',
             profit: parseFloat(profit.toFixed(2)),
             timestamp: new Date().toLocaleTimeString('ru-RU')
           };
           
           setHistory(prev => [newHistoryItem, ...prev].slice(0, 20));
+          addBotLog('TRADE_CLOSED', { 
+            pair: trade.pair, 
+            type: trade.type, 
+            amount: trade.amount,
+            reason: `${isWin ? 'WIN' : 'LOSS'} ${profit > 0 ? '+' : ''}$${profit.toFixed(2)}` 
+          });
           
+          return { ...trade, timeLeft: 0 };
+        }
+        
+        return { ...trade, timeLeft: newTimeLeft };
+      }).filter(trade => trade.timeLeft > 0));
+      
+      if (botSettings.isEnabled && botSettings.accountId) {
+        setNextTradeCheck(prev => {
+          const newValue = prev - 1;
+          
+          if (newValue <= 0) {
+            const bestSignal = signals
+              .filter(s => s.isActive && s.successRate >= 80)
+              .sort((a, b) => b.successRate - a.successRate)[0];
+            
+            if (bestSignal && activeTrades.length < 3) {
+              const currentPrice = chartData[chartData.length - 1]?.price || 1.1;
+              const tradeAmount = Math.floor(
+                Math.random() * (botSettings.maxTradeAmount - botSettings.minTradeAmount) + botSettings.minTradeAmount
+              );
+              
+              const newTrade: ActiveTrade = {
+                id: `trade-${Date.now()}`,
+                pair: bestSignal.pair,
+                type: bestSignal.type,
+                amount: tradeAmount,
+                openPrice: currentPrice,
+                expiration: bestSignal.expiration,
+                timeLeft: bestSignal.expiration,
+                successRate: bestSignal.successRate
+              };
+              
+              setActiveTrades(prev => [...prev, newTrade]);
+              addBotLog('TRADE_OPENED', {
+                pair: bestSignal.pair,
+                type: bestSignal.type,
+                amount: tradeAmount,
+                reason: `Успех ${bestSignal.successRate}% • RSI ${bestSignal.rsi.toFixed(0)} • MACD ${bestSignal.macd}`
+              });
+            } else if (activeTrades.length === 0) {
+              addBotLog('ANALYZING', { reason: 'Анализирую рынок... Ожидаю сигналов с успехом >80%' });
+            }
+            
+            return Math.floor(5 + Math.random() * 10);
+          }
+          
+          return newValue;
+        });
+      }
+      
+      setSignals(prev => prev.map(signal => {
+        const newTimeToSignal = Math.max(0, signal.timeToSignal - 1);
+        
+        if (newTimeToSignal === 0 && signal.timeToSignal === 1) {
           return generateNewSignal(signal, chartData);
         }
         
@@ -512,6 +604,83 @@ const Index = () => {
             </Badge>
           )}
         </div>
+
+        {botSettings.isEnabled && activeTrades.length > 0 && (
+          <Card className="p-6 bg-gradient-to-r from-primary/10 to-success/10 border-primary/30">
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <Icon name="Activity" size={20} className="text-primary" />
+                <h3 className="text-lg font-semibold">Активные позиции бота ({activeTrades.length})</h3>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {activeTrades.map(trade => (
+                  <div key={trade.id} className="p-4 bg-card rounded-lg border border-border space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold font-mono">{trade.pair}</span>
+                      <Badge className={trade.type === 'BUY' ? 'bg-success' : 'bg-destructive'}>
+                        {trade.type}
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <p className="text-muted-foreground">Сумма</p>
+                        <p className="font-semibold">${trade.amount}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Осталось</p>
+                        <p className="font-semibold">{Math.floor(trade.timeLeft / 60)}:{(trade.timeLeft % 60).toString().padStart(2, '0')}</p>
+                      </div>
+                    </div>
+                    <Progress value={(trade.timeLeft / trade.expiration) * 100} className="h-1" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {botSettings.isEnabled && botLogs.length > 0 && (
+          <Card className="p-6 bg-card border-border">
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <Icon name="ScrollText" size={20} className="text-primary" />
+                <h3 className="text-lg font-semibold">Лог активности AI-бота</h3>
+              </div>
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {botLogs.map(log => (
+                  <div key={log.id} className="flex items-start gap-3 p-3 bg-secondary/30 rounded text-sm">
+                    <span className="text-muted-foreground font-mono text-xs whitespace-nowrap">{log.timestamp}</span>
+                    <div className="flex-1">
+                      {log.action === 'TRADE_OPENED' && (
+                        <div className="flex items-center gap-2">
+                          <Icon name="TrendingUp" size={16} className="text-success" />
+                          <span className="font-semibold">Открыта позиция</span>
+                          <Badge variant="outline" className="text-xs">{log.pair}</Badge>
+                          <Badge className={log.type === 'BUY' ? 'bg-success text-xs' : 'bg-destructive text-xs'}>{log.type}</Badge>
+                          <span className="text-muted-foreground">${log.amount}</span>
+                        </div>
+                      )}
+                      {log.action === 'TRADE_CLOSED' && (
+                        <div className="flex items-center gap-2">
+                          <Icon name="CheckCircle" size={16} className="text-primary" />
+                          <span className="font-semibold">Закрыта позиция</span>
+                          <Badge variant="outline" className="text-xs">{log.pair}</Badge>
+                          <span className={log.reason?.includes('WIN') ? 'text-success font-semibold' : 'text-destructive font-semibold'}>{log.reason}</span>
+                        </div>
+                      )}
+                      {log.action === 'ANALYZING' && (
+                        <div className="flex items-center gap-2">
+                          <Icon name="Search" size={16} className="text-muted-foreground" />
+                          <span className="text-muted-foreground">{log.reason}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Card>
+        )}
 
         <Tabs defaultValue="signals" className="w-full">
           <TabsList className="grid w-full grid-cols-3 bg-card">
