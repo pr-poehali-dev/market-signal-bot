@@ -67,30 +67,123 @@ interface ActiveTrade {
   expiration: number;
   timeLeft: number;
   successRate: number;
+  strategy: string;
 }
 
-const analyzeMarket = (chartData: any[], pair: string) => {
-  const recent = chartData.slice(-20);
+interface MarketAnalysis {
+  pair: string;
+  score: number;
+  direction: 'BUY' | 'SELL';
+  strategy: string;
+  indicators: {
+    rsi: number;
+    macd: number;
+    ema: number;
+    sma: number;
+    stochastic: number;
+    atr: number;
+    adx: number;
+    cci: number;
+  };
+  confidence: number;
+}
+
+const advancedMarketAnalysis = (chartData: any[], pair: string): MarketAnalysis => {
+  const recent = chartData.slice(-50);
   const prices = recent.map(d => d.price);
-  const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length;
-  const trend = prices[prices.length - 1] - prices[0];
-  const volatility = Math.max(...prices) - Math.min(...prices);
+  const volumes = recent.map(d => d.volume);
+  const currentPrice = prices[prices.length - 1];
+  
+  const sma20 = prices.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const sma50 = prices.reduce((a, b) => a + b, 0) / Math.min(50, prices.length);
+  const ema12 = prices.slice(-12).reduce((a, b) => a + b, 0) / 12;
+  const ema26 = prices.slice(-26).reduce((a, b) => a + b, 0) / Math.min(26, prices.length);
+  
   const rsi = recent[recent.length - 1].rsi;
   const macd = recent[recent.length - 1].macd;
   
-  let successRate = 72;
-  if (rsi < 30 && trend > 0) successRate += 15;
-  if (rsi > 70 && trend < 0) successRate += 15;
-  if (Math.abs(macd) > 0.5) successRate += 8;
-  if (volatility < 0.005) successRate += 5;
+  const highs = prices.slice(-14).map((_, i, arr) => Math.max(...arr.slice(Math.max(0, i - 5), i + 1)));
+  const lows = prices.slice(-14).map((_, i, arr) => Math.min(...arr.slice(Math.max(0, i - 5), i + 1)));
+  const stochastic = lows[lows.length - 1] === highs[highs.length - 1] ? 50 : 
+    ((currentPrice - lows[lows.length - 1]) / (highs[highs.length - 1] - lows[lows.length - 1])) * 100;
   
-  const direction: 'BUY' | 'SELL' = 
-    (rsi < 35 && macd > 0) || (trend > 0 && prices[prices.length - 1] < avgPrice) ? 'BUY' : 'SELL';
+  const tr = Math.max(prices[prices.length - 1] - prices[prices.length - 2], 
+    Math.abs(prices[prices.length - 1] - prices[prices.length - 2]));
+  const atr = tr * 0.7 + (prices[prices.length - 1] * 0.02);
+  
+  let dmPlus = 0, dmMinus = 0;
+  for (let i = prices.length - 14; i < prices.length; i++) {
+    const upMove = prices[i] - prices[i - 1];
+    const downMove = prices[i - 1] - prices[i];
+    if (upMove > downMove && upMove > 0) dmPlus += upMove;
+    if (downMove > upMove && downMove > 0) dmMinus += downMove;
+  }
+  const adx = Math.abs(dmPlus - dmMinus) / (dmPlus + dmMinus + 0.0001) * 100;
+  
+  const typicalPrice = (prices[prices.length - 1] + prices[prices.length - 2]) / 2;
+  const smaTP = prices.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const meanDev = prices.slice(-20).reduce((sum, p) => sum + Math.abs(p - smaTP), 0) / 20;
+  const cci = (typicalPrice - smaTP) / (0.015 * meanDev);
+  
+  const strategies = [
+    { 
+      name: 'RSI Reversal', 
+      score: (rsi < 30 ? 95 : rsi > 70 ? 92 : 70) + (Math.abs(macd) > 0.3 ? 5 : 0),
+      direction: (rsi < 30 ? 'BUY' : 'SELL') as 'BUY' | 'SELL'
+    },
+    { 
+      name: 'MACD Crossover', 
+      score: (Math.abs(macd) > 0.4 ? 90 : 75) + (adx > 25 ? 8 : 0),
+      direction: (macd > 0 ? 'BUY' : 'SELL') as 'BUY' | 'SELL'
+    },
+    { 
+      name: 'EMA Trend', 
+      score: (Math.abs(ema12 - ema26) > 0.005 ? 88 : 72) + (currentPrice > sma20 ? 7 : 0),
+      direction: (ema12 > ema26 ? 'BUY' : 'SELL') as 'BUY' | 'SELL'
+    },
+    { 
+      name: 'Stochastic Momentum', 
+      score: (stochastic < 20 || stochastic > 80 ? 93 : 74) + (rsi < 35 || rsi > 65 ? 6 : 0),
+      direction: (stochastic < 20 ? 'BUY' : 'SELL') as 'BUY' | 'SELL'
+    },
+    { 
+      name: 'Bollinger Breakout', 
+      score: (atr > 0.01 ? 91 : 76) + (adx > 30 ? 9 : 0),
+      direction: (currentPrice > sma20 ? 'BUY' : 'SELL') as 'BUY' | 'SELL'
+    },
+    { 
+      name: 'CCI Divergence', 
+      score: (Math.abs(cci) > 100 ? 89 : 73) + (macd * cci > 0 ? 8 : 0),
+      direction: (cci > 0 ? 'BUY' : 'SELL') as 'BUY' | 'SELL'
+    }
+  ];
+  
+  const bestStrategy = strategies.reduce((best, curr) => curr.score > best.score ? curr : best);
+  
+  const confidence = Math.min(95, Math.floor(
+    (bestStrategy.score + 
+    (adx > 25 ? 5 : 0) + 
+    (Math.abs(macd) > 0.3 ? 3 : 0) +
+    ((rsi < 30 || rsi > 70) ? 4 : 0) +
+    (stochastic < 20 || stochastic > 80 ? 3 : 0)) * 0.95
+  ));
   
   return {
-    successRate: Math.min(95, Math.max(70, Math.floor(successRate))),
-    direction,
-    strength: volatility > 0.01 ? 'HIGH' : volatility > 0.005 ? 'MEDIUM' : 'LOW'
+    pair,
+    score: bestStrategy.score,
+    direction: bestStrategy.direction,
+    strategy: bestStrategy.name,
+    indicators: {
+      rsi: Math.floor(rsi),
+      macd: parseFloat(macd.toFixed(3)),
+      ema: parseFloat((ema12 - ema26).toFixed(5)),
+      sma: parseFloat((currentPrice - sma20).toFixed(5)),
+      stochastic: Math.floor(stochastic),
+      atr: parseFloat(atr.toFixed(5)),
+      adx: Math.floor(adx),
+      cci: Math.floor(cci)
+    },
+    confidence
   };
 };
 
@@ -143,16 +236,16 @@ const generateChartData = (pair: string) => {
 };
 
 const generateNewSignal = (oldSignal: TradingSignal, chartData: any[]): TradingSignal => {
-  const analysis = analyzeMarket(chartData, oldSignal.pair);
+  const analysis = advancedMarketAnalysis(chartData, oldSignal.pair);
   
   return {
     ...oldSignal,
     type: analysis.direction,
-    successRate: analysis.successRate,
+    successRate: analysis.confidence,
     expiration: [60, 120, 180, 300][Math.floor(Math.random() * 4)],
     timeToSignal: Math.floor(45 + Math.random() * 180),
-    rsi: chartData[chartData.length - 1].rsi,
-    macd: chartData[chartData.length - 1].macd,
+    rsi: analysis.indicators.rsi,
+    macd: analysis.indicators.macd,
     bollingerPosition: ['UPPER', 'MIDDLE', 'LOWER'][Math.floor(Math.random() * 3)] as any,
     isActive: true,
     openPrice: undefined
@@ -229,15 +322,23 @@ const Index = () => {
       }).filter(trade => trade.timeLeft > 0));
       
       if (botSettings.isEnabled && botSettings.accountId) {
+        const allAnalyses = signals.map(signal => {
+          try {
+            return advancedMarketAnalysis(chartData, signal.pair);
+          } catch {
+            return null;
+          }
+        }).filter(a => a !== null) as MarketAnalysis[];
+        
+        const bestAnalysis = allAnalyses
+          .filter(a => a.confidence >= 82)
+          .sort((a, b) => b.confidence - a.confidence)[0];
+        
         setNextTradeCheck(prev => {
           const newValue = prev - 1;
           
           if (newValue <= 0) {
-            const bestSignal = signals
-              .filter(s => s.isActive && s.successRate >= 80)
-              .sort((a, b) => b.successRate - a.successRate)[0];
-            
-            if (bestSignal && activeTrades.length < 3) {
+            if (bestAnalysis && activeTrades.length < 3) {
               const currentPrice = chartData[chartData.length - 1]?.price || 1.1;
               const tradeAmount = Math.floor(
                 Math.random() * (botSettings.maxTradeAmount - botSettings.minTradeAmount) + botSettings.minTradeAmount
@@ -245,27 +346,31 @@ const Index = () => {
               
               const newTrade: ActiveTrade = {
                 id: `trade-${Date.now()}`,
-                pair: bestSignal.pair,
-                type: bestSignal.type,
+                pair: bestAnalysis.pair,
+                type: bestAnalysis.direction,
                 amount: tradeAmount,
                 openPrice: currentPrice,
-                expiration: bestSignal.expiration,
-                timeLeft: bestSignal.expiration,
-                successRate: bestSignal.successRate
+                expiration: [60, 120, 180, 300][Math.floor(Math.random() * 4)],
+                timeLeft: [60, 120, 180, 300][Math.floor(Math.random() * 4)],
+                successRate: bestAnalysis.confidence,
+                strategy: bestAnalysis.strategy
               };
               
               setActiveTrades(prev => [...prev, newTrade]);
               addBotLog('TRADE_OPENED', {
-                pair: bestSignal.pair,
-                type: bestSignal.type,
+                pair: bestAnalysis.pair,
+                type: bestAnalysis.direction,
                 amount: tradeAmount,
-                reason: `Успех ${bestSignal.successRate}% • RSI ${bestSignal.rsi.toFixed(0)} • MACD ${bestSignal.macd}`
+                reason: `${bestAnalysis.strategy} • ${bestAnalysis.confidence}% • RSI:${bestAnalysis.indicators.rsi} MACD:${bestAnalysis.indicators.macd} ADX:${bestAnalysis.indicators.adx} CCI:${bestAnalysis.indicators.cci}`
               });
             } else if (activeTrades.length === 0) {
-              addBotLog('ANALYZING', { reason: 'Анализирую рынок... Ожидаю сигналов с успехом >80%' });
+              const topAnalysis = allAnalyses.sort((a, b) => b.confidence - a.confidence)[0];
+              addBotLog('ANALYZING', { 
+                reason: `Анализирую ${allAnalyses.length} пар • Лучший: ${topAnalysis?.pair || 'N/A'} (${topAnalysis?.confidence || 0}%) • Стратегия: ${topAnalysis?.strategy || 'N/A'} • Ожидаю >82%` 
+              });
             }
             
-            return Math.floor(5 + Math.random() * 10);
+            return 1;
           }
           
           return newValue;
@@ -337,6 +442,18 @@ const Index = () => {
     winRate: Math.round((history.filter(h => h.result === 'WIN').length / history.length) * 100),
     totalProfit: history.reduce((sum, h) => sum + h.profit, 0).toFixed(2)
   };
+  
+  const profitByHour = Array.from({ length: 24 }, (_, hour) => {
+    const hourTrades = history.filter(h => {
+      const tradeHour = parseInt(h.timestamp.split(':')[0]);
+      return tradeHour === hour;
+    });
+    return {
+      hour: `${hour}:00`,
+      profit: hourTrades.reduce((sum, h) => sum + h.profit, 0),
+      trades: hourTrades.length
+    };
+  }).filter(h => h.trades > 0);
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-6">
@@ -621,14 +738,22 @@ const Index = () => {
                         {trade.type}
                       </Badge>
                     </div>
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div>
-                        <p className="text-muted-foreground">Сумма</p>
-                        <p className="font-semibold">${trade.amount}</p>
+                    <div className="text-xs space-y-1">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Стратегия</span>
+                        <span className="font-semibold text-primary">{trade.strategy}</span>
                       </div>
-                      <div>
-                        <p className="text-muted-foreground">Осталось</p>
-                        <p className="font-semibold">{Math.floor(trade.timeLeft / 60)}:{(trade.timeLeft % 60).toString().padStart(2, '0')}</p>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Сумма</span>
+                        <span className="font-semibold">${trade.amount}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Успех</span>
+                        <span className="font-semibold text-success">{trade.successRate}%</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Осталось</span>
+                        <span className="font-semibold">{Math.floor(trade.timeLeft / 60)}:{(trade.timeLeft % 60).toString().padStart(2, '0')}</span>
                       </div>
                     </div>
                     <Progress value={(trade.timeLeft / trade.expiration) * 100} className="h-1" />
@@ -792,6 +917,34 @@ const Index = () => {
           </TabsContent>
 
           <TabsContent value="charts" className="mt-6 space-y-4">
+            {profitByHour.length > 0 && (
+              <Card className="p-6 bg-card border-border">
+                <div className="space-y-2 mb-4">
+                  <h3 className="text-lg font-semibold text-foreground">📊 Почасовая доходность</h3>
+                  <p className="text-sm text-muted-foreground">Прибыль по часам торговли</p>
+                </div>
+                <ResponsiveContainer width="100%" height={250}>
+                  <AreaChart data={profitByHour}>
+                    <defs>
+                      <linearGradient id="colorProfit" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="hsl(var(--success))" stopOpacity={0.3}/>
+                        <stop offset="95%" stopColor="hsl(var(--success))" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="hour" stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 12 }} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 12 }} />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px' }}
+                      formatter={(value: number) => [`$${value.toFixed(2)}`, 'Прибыль']}
+                    />
+                    <ReferenceLine y={0} stroke="hsl(var(--border))" strokeDasharray="3 3" />
+                    <Area type="monotone" dataKey="profit" stroke="hsl(var(--success))" strokeWidth={2} fillOpacity={1} fill="url(#colorProfit)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </Card>
+            )}
+
             <div className="flex items-center gap-4">
               <Select value={selectedPair} onValueChange={setSelectedPair}>
                 <SelectTrigger className="w-48 bg-card">
