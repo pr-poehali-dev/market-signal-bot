@@ -10,6 +10,9 @@ import StatsCards from '@/components/StatsCards';
 import SignalsTab from '@/components/SignalsTab';
 import ChartsTab from '@/components/ChartsTab';
 import HistoryTab from '@/components/HistoryTab';
+import RealTimePanel from '@/components/RealTimePanel';
+import { useRealTimeMarket } from '@/hooks/useRealTimeMarket';
+import { usePreSignals } from '@/hooks/usePreSignals';
 
 const Index = () => {
   const [signals, setSignals] = useState<TradingSignal[]>(generateMockSignals());
@@ -32,7 +35,12 @@ const Index = () => {
     maxConcurrentTrades: 5,
     martingaleEnabled: false,
     antiDetectEnabled: true,
-    useSmartRisk: true
+    useSmartRisk: true,
+    preSignalEnabled: true,
+    preSignalMinutes: 1,
+    autoUpdateStrategies: true,
+    realTimeQuotes: true,
+    updateInterval: 1000
   });
   const [newIP, setNewIP] = useState('');
   const [botLogs, setBotLogs] = useState<BotLog[]>([]);
@@ -41,6 +49,19 @@ const Index = () => {
   const [accountBalance, setAccountBalance] = useState(1000);
   const [sessionProfit, setSessionProfit] = useState(0);
   const [consecutiveLosses, setConsecutiveLosses] = useState(0);
+
+  // Хуки реального времени
+  const tradingPairs = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD', 'BTC/USD', 'ETH/USD'];
+  const { quotes, marketAnalysis, strategyPerformance, isConnected, lastUpdate } = useRealTimeMarket(
+    tradingPairs, 
+    botSettings.realTimeQuotes ? botSettings.updateInterval : 5000
+  );
+  
+  const { preSignals, upcomingSignals } = usePreSignals(marketAnalysis, {
+    enabled: botSettings.preSignalEnabled,
+    minutesBefore: botSettings.preSignalMinutes,
+    minConfidence: botSettings.minConfidence,
+  });
 
   const addBotLog = (action: BotLog['action'], data?: Partial<BotLog>) => {
     const newLog: BotLog = {
@@ -321,6 +342,18 @@ const Index = () => {
           botLogs={botLogs}
           isEnabled={botSettings.isEnabled}
         />
+
+        {botSettings.realTimeQuotes && (
+          <RealTimePanel 
+            quotes={quotes}
+            marketAnalysis={marketAnalysis}
+            strategyPerformance={strategyPerformance}
+            preSignals={preSignals}
+            upcomingSignals={upcomingSignals}
+            isConnected={isConnected}
+            lastUpdate={lastUpdate}
+          />
+        )}
 
         <Tabs defaultValue="signals" className="w-full">
           <TabsList className="grid w-full grid-cols-3 bg-card">

@@ -109,6 +109,84 @@ export const BotSettingsDialog = ({ botSettings, setBotSettings, newIP, setNewIP
             </div>
           </div>
 
+          <div className="p-4 bg-gradient-to-br from-success/20 to-primary/20 border border-success/40 rounded-lg space-y-3">
+            <div className="flex items-center gap-2">
+              <Icon name="Zap" size={20} className="text-success" />
+              <Label className="text-base font-semibold">⚡ Система реального времени</Label>
+            </div>
+            
+            <div className="flex items-center justify-between p-3 bg-card rounded border border-border">
+              <div>
+                <Label className="text-sm">Предсигналы за 1 минуту</Label>
+                <p className="text-xs text-muted-foreground">Получать оповещения перед открытием</p>
+              </div>
+              <Switch
+                checked={botSettings.preSignalEnabled}
+                onCheckedChange={(checked) => setBotSettings(prev => ({ ...prev, preSignalEnabled: checked }))}
+              />
+            </div>
+
+            {botSettings.preSignalEnabled && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="preSignalMinutes">Время предупреждения (минут)</Label>
+                  <span className="text-sm font-semibold text-primary">{botSettings.preSignalMinutes}</span>
+                </div>
+                <Slider
+                  id="preSignalMinutes"
+                  min={1}
+                  max={5}
+                  step={1}
+                  value={[botSettings.preSignalMinutes]}
+                  onValueChange={([value]) => setBotSettings(prev => ({ ...prev, preSignalMinutes: value }))}
+                  className="w-full"
+                />
+                <p className="text-xs text-muted-foreground">
+                  🎯 Оптимально: 1-2 минуты для подготовки к сделке
+                </p>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between p-3 bg-card rounded border border-border">
+              <div>
+                <Label className="text-sm">Котировки в реальном времени</Label>
+                <p className="text-xs text-muted-foreground">Обновление каждую 1 секунду</p>
+              </div>
+              <Switch
+                checked={botSettings.realTimeQuotes}
+                onCheckedChange={(checked) => setBotSettings(prev => ({ ...prev, realTimeQuotes: checked }))}
+              />
+            </div>
+
+            <div className="flex items-center justify-between p-3 bg-card rounded border border-border">
+              <div>
+                <Label className="text-sm">Автообновление стратегий</Label>
+                <p className="text-xs text-muted-foreground">Улучшение алгоритмов в реальном времени</p>
+              </div>
+              <Switch
+                checked={botSettings.autoUpdateStrategies}
+                onCheckedChange={(checked) => setBotSettings(prev => ({ ...prev, autoUpdateStrategies: checked }))}
+              />
+            </div>
+
+            {botSettings.realTimeQuotes && (
+              <div className="p-3 bg-success/10 border border-success/30 rounded space-y-1 text-xs">
+                <div className="flex items-center gap-1">
+                  <Icon name="Check" size={12} className="text-success" />
+                  <span>Обновление графиков каждую {botSettings.updateInterval / 1000} сек</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Icon name="Check" size={12} className="text-success" />
+                  <span>120+ технических индикаторов в режиме реального времени</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Icon name="Check" size={12} className="text-success" />
+                  <span>Автоматический анализ всех пар одновременно</span>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="minAmount">Минимальная сумма ($)</Label>
